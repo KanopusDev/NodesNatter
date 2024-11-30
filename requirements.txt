@@ -1,0 +1,7 @@
+socket
+threading
+json
+pyaudio
+numpy
+curses
+sqlite3
