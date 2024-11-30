@@ -42,30 +42,52 @@ class UIManager:
         curses.init_pair(3, curses.COLOR_YELLOW, -1) # Commands
         curses.init_pair(4, curses.COLOR_RED, -1)    # Errors
         curses.init_pair(5, curses.COLOR_WHITE, curses.COLOR_BLUE)  # Status bar
+        curses.init_pair(6, curses.COLOR_MAGENTA, -1)   # Private messages
+        curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_WHITE)  # Input highlight
+        curses.init_pair(8, curses.COLOR_BLUE, -1)      # Timestamps
+        curses.init_pair(9, curses.COLOR_WHITE, curses.COLOR_RED)    # Important alerts
         
     def setup_windows(self):
         # Get terminal dimensions
         self.height, self.width = self.screen.getmaxyx()
         
-        # Calculate window sizes (fixed proportions)
-        self.chat_height = self.height - 4
-        self.chat_width = int(self.width * 0.8)  # 80% of width for chat
-        self.users_width = self.width - self.chat_width
+        # Calculate window sizes
+        chat_height = self.height - 4
+        chat_width = max(self.width - 22, 20)  # Ensure minimum width
+        users_width = 20
         
-        # Create windows with proper positioning
-        self.chat_win = curses.newwin(self.chat_height, self.chat_width, 0, 0)
-        self.users_win = curses.newwin(self.chat_height, self.users_width, 0, self.chat_width)
-        self.status_win = curses.newwin(1, self.width, self.chat_height, 0)
-        self.input_win = curses.newwin(3, self.width, self.chat_height + 1, 0)
-        
-        # Enable scrolling for chat window
+        # Create main chat window
+        self.chat_win = curses.newwin(chat_height, chat_width, 0, 0)
         self.chat_win.scrollok(True)
-        self.chat_win.idlok(True)
+        
+        # Create users window
+        self.users_win = curses.newwin(chat_height, users_width, 0, chat_width)
+        
+        # Create status bar
+        self.status_win = curses.newwin(1, self.width, chat_height, 0)
+        
+        # Create input window
+        self.input_win = curses.newwin(3, self.width, chat_height + 1, 0)
         
         # Draw borders
         self.chat_win.box()
         self.users_win.box()
         self.input_win.box()
+        
+        # Add title to chat window
+        self.chat_win.attron(curses.color_pair(2))
+        self.chat_win.addstr(0, 2, " Chat Messages ")
+        self.chat_win.attroff(curses.color_pair(2))
+        
+        # Add title to users window
+        self.users_win.attron(curses.color_pair(2))
+        self.users_win.addstr(0, 2, " Online Users ")
+        self.users_win.attroff(curses.color_pair(2))
+        
+        # Style input window
+        self.input_win.attron(curses.color_pair(7))
+        self.input_win.addstr(0, 2, " Message Input ")
+        self.input_win.attroff(curses.color_pair(7))
         
         # Initial refresh
         self.screen.clear()
@@ -79,26 +101,40 @@ class UIManager:
         self.status_win.refresh()
         
     def add_message(self, message, msg_type="normal"):
-        timestamp = datetime.now().strftime("%H:%M")
-        color = {
-            "system": 1,
-            "user": 2,
-            "command": 3,
-            "error": 4
-        }.get(msg_type, 0)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        colors = {
+            "system": 1,    # Green
+            "user": 2,      # Cyan
+            "command": 3,   # Yellow
+            "error": 4,     # Red
+            "private": 6,   # Magenta
+            "self": 2,      # Cyan (for your own messages)
+            "normal": 2     # Cyan
+        }
+        color = colors.get(msg_type, 0)
         
-        self.messages.append((f"[{timestamp}] {message}", color))
-        
-        # Limit number of stored messages
+        # Add visual indicator for sent messages
+        if msg_type == "self":
+            formatted_msg = f"[{timestamp}] ➤ {message}"  # Add arrow for your messages
+        else:
+            formatted_msg = f"[{timestamp}] {message}"
+            
+        self.messages.append((formatted_msg, color))
         if len(self.messages) > self.max_messages:
             self.messages = self.messages[-self.max_messages:]
-            
+        
         self.refresh_chat()
+        self.scroll_to_bottom()  # Auto-scroll to the latest message
 
     def refresh_chat(self):
         try:
             self.chat_win.clear()
             self.chat_win.box()
+            
+            # Add title
+            self.chat_win.attron(curses.color_pair(2))
+            self.chat_win.addstr(0, 2, " Chat Messages ")
+            self.chat_win.attroff(curses.color_pair(2))
             
             height, width = self.chat_win.getmaxyx()
             display_height = height - 2  # Account for borders
@@ -112,8 +148,19 @@ class UIManager:
             # Display messages
             for i, (message, color) in enumerate(self.messages[start_idx:end_idx]):
                 try:
+                    # Split message into timestamp and content
+                    timestamp_end = message.find(']') + 1
+                    timestamp = message[:timestamp_end]
+                    content = message[timestamp_end:]
+                    
+                    # Draw timestamp in blue
+                    self.chat_win.attron(curses.color_pair(8))
+                    self.chat_win.addstr(i + 1, 1, timestamp)
+                    self.chat_win.attroff(curses.color_pair(8))
+                    
+                    # Draw message content in specified color
                     self.chat_win.attron(curses.color_pair(color))
-                    self.chat_win.addstr(i + 1, 1, message[:display_width])
+                    self.chat_win.addstr(i + 1, timestamp_end + 1, content[:display_width-timestamp_end-2])
                     self.chat_win.attroff(curses.color_pair(color))
                 except curses.error:
                     pass
@@ -219,6 +266,36 @@ class UIManager:
             
         return password
 
+    def process_input(self, message, msg_type="chat"):
+        """New method to process input before sending"""
+        try:
+            if message.strip():
+                formatted_msg = {
+                    'type': msg_type,
+                    'content': message.strip(),
+                    'timestamp': datetime.now().isoformat(),
+                    'status': 'sending'  # Add status tracking
+                }
+                # Show sending indicator
+                self.add_message(f"Sending: {message}", "system")
+                return formatted_msg
+        except Exception as e:
+            self.add_message("Error processing message", "error")
+            return None
+
+    def scroll_to_bottom(self):
+        """Scroll to show the most recent messages"""
+        try:
+            height = self.chat_win.getmaxyx()[0]
+            total_messages = len(self.messages)
+            
+            # If we have more messages than display height, adjust scroll position
+            if total_messages > height - 2:  # Account for borders
+                self.scroll_position = 0  # Reset to bottom
+                self.refresh_chat()
+        except Exception as e:
+            self.logger.error(f"Error scrolling to bottom: {e}")
+
 def setup_logging():
     # Create logs directory if it doesn't exist
     os.makedirs('logs', exist_ok=True)
@@ -256,7 +333,50 @@ class ChatClient:
         self.running = False
         self.ui = None
         self.logger.info(f"Chat client initialized for {host}:{port}")
+        self.message_queue = []  # Add message queue
+        self.last_message_id = 0  # Add message ID tracking
         
+    def generate_message_id(self):
+        """Generate unique message ID"""
+        self.last_message_id += 1
+        return f"{self.username}_{int(time.time())}_{self.last_message_id}"
+        logger.debug(f"Generated message ID: {msg_id}, {message}")
+
+    def queue_message(self, message):
+        """Add message to queue with ID and status"""
+        msg_id = self.generate_message_id()
+        msg_data = {
+            'id': msg_id,
+            'type': 'message',
+            'message': message,
+            'sender': self.username,
+            'timestamp': datetime.now().isoformat(),
+            'status': 'queued'
+        }
+        self.message_queue.append(msg_data)
+        return msg_id
+        logger.debug(f"Queued message: {msg_id}, {message}")
+
+    def send_queued_messages(self):
+        """Process and send queued messages"""
+        while self.message_queue:
+            msg_data = self.message_queue.pop(0)
+            try:
+                msg_data['status'] = 'sending'
+                encoded_message = json.dumps(msg_data) + '\n'
+                self.socket.sendall(encoded_message.encode())
+                self.logger.debug(f"Sent message: {msg_data['id']}")
+                
+                # Wait for acknowledgment (optional)
+                msg_data['status'] = 'sent'
+                self.ui.add_message(f"✓ {msg_data['message']}", "system")
+            except Exception as e:
+                self.logger.error(f"Failed to send message: {e}")
+                msg_data['status'] = 'failed'
+                self.message_queue.append(msg_data)  # Re-queue failed message
+                self.ui.add_message("Message queued for retry", "error")
+                break
+
     def start(self):
         try:
             self.socket.connect((self.host, self.port))
@@ -342,45 +462,94 @@ class ChatClient:
         buffer = ""
         while self.running:
             try:
-                data = self.socket.recv(1024).decode()
+                data = self.socket.recv(4096).decode()
                 if not data:
+                    self.logger.warning("Connection closed by server")
                     break
-                    
+
+                self.logger.debug(f"Received data chunk: {data[:100]}...")
                 buffer += data
+
+                # Process complete messages
                 while '\n' in buffer:
-                    message, buffer = buffer.split('\n', 1)
                     try:
-                        msg_data = json.loads(message)
-                        self.handle_message(msg_data)
-                    except json.JSONDecodeError:
-                        if message.strip():
-                            self.ui.add_message(message.strip())
+                        # Find the next complete message
+                        message_end = buffer.find('\n')
+                        message = buffer[:message_end]
+                        buffer = buffer[message_end + 1:]
+
+                        # Skip empty messages
+                        if not message.strip():
+                            continue
+
+                        # Parse and handle the message
+                        try:
+                            msg_data = json.loads(message)
+                            self.logger.debug(f"Processing message: {msg_data['type']}")
+                            self.handle_message(msg_data)
+                        except json.JSONDecodeError as je:
+                            self.logger.error(f"Invalid JSON message: {message[:100]}")
+                            self.logger.debug(f"JSON Error: {str(je)}")
+                            continue
+
                     except Exception as e:
-                        self.logger.error(f"Error processing message: {e}")
-                        
+                        self.logger.error(f"Error processing message chunk: {e}")
+                        buffer = ""  # Clear buffer on error
+
             except Exception as e:
                 if not self.running:
                     break
-                self.logger.error(f"Error receiving message: {e}")
-                time.sleep(0.1)
+                self.logger.error(f"Connection error: {e}", exc_info=True)
+                if not self.reconnect():
+                    break
+                time.sleep(1)
 
     def handle_message(self, msg_data):
-        """Handle different types of messages"""
+        """Enhanced message handling with better UI updates"""
         try:
-            msg_type = msg_data.get('type', 'normal')
+            msg_type = msg_data.get('type')
+            self.logger.debug(f"Handling message type: {msg_type}")
+
             if msg_type == 'message':
-                self.ui.add_message(msg_data['message'], msg_data.get('msg_type', 'normal'))
+                sender = msg_data.get('sender', 'Unknown')
+                message = msg_data.get('message', '')
+                msg_subtype = msg_data.get('msg_type', 'normal')
+                
+                if sender == self.username:
+                    # Don't show our own messages again
+                    return
+                elif sender == 'SYSTEM':
+                    self.ui.add_message(message, "system")
+                else:
+                    self.ui.add_message(f"{sender}: {message}", msg_subtype)
+                    
             elif msg_type == 'users':
-                self.ui.update_users(msg_data['users'])
+                self.logger.debug(f"Updating users list: {msg_data.get('users', [])}")
+                self.ui.update_users(msg_data.get('users', []))
             elif msg_type == 'history':
-                self.ui.messages.clear()
-                for msg in msg_data['messages']:
+                self.logger.debug("Processing message history")
+                self.handle_history(msg_data.get('messages', []))
+            elif msg_type == 'error':
+                self.ui.add_message(msg_data.get('message', 'Unknown error'), 'error')
+            
+            self.ui.refresh_chat()
+            
+        except Exception as e:
+            self.logger.error(f"Error in handle_message: {e}", exc_info=True)
+
+    def handle_history(self, messages):
+        """Handle message history"""
+        try:
+            self.ui.messages.clear()
+            for msg in messages:
+                try:
                     timestamp = datetime.fromisoformat(msg['timestamp']).strftime("%H:%M")
                     message = f"{msg['sender']}: {msg['message']}"
                     self.ui.add_message(message, "normal")
-            self.ui.refresh_all()
+                except Exception as e:
+                    self.logger.error(f"Error processing history message: {e}")
         except Exception as e:
-            self.logger.error(f"Error handling message: {e}")
+            self.logger.error(f"Error handling history: {e}", exc_info=True)
 
     def handle_file_receive(self, file_data):
         filename = file_data['name']
@@ -391,32 +560,86 @@ class ChatClient:
         print(f"\rReceived file: received_{filename}\n> ", end="")
 
     def input_loop(self):
+        """Modified input loop with improved message handling"""
         while self.running:
             try:
                 message = self.ui.get_input()
+                if not message or not message.strip():
+                    continue
+                    
+                self.logger.debug(f"Processing input: {message}")
                 
-                if message:  # Only process non-empty messages
+                if message.startswith('/'):
                     if message.lower() == '/quit':
                         self.running = False
                         break
                     elif message.lower() == '/help':
                         self.show_help()
+                    elif message.lower().startswith('/file'):
+                        filepath = message.split(' ', 1)[1]
+                        self.send_file(filepath)
                     elif message.lower() == '/passwd':
                         self.change_password()
-                    elif message.startswith('/file'):
-                        self.handle_file_send(message[6:])
                     else:
-                        # Send message to server
-                        msg_data = {
-                            'type': 'message',
-                            'message': message
-                        }
-                        self.socket.send((json.dumps(msg_data) + '\n').encode())
-                        # Don't add local echo - wait for server to echo back
-                        
+                        self.handle_command(message)
+                else:
+                    # Construct and send message
+                    msg_data = {
+                        'type': 'message',
+                        'message': message.strip(),
+                        'id': self.generate_message_id(),
+                        'sender': self.username,
+                        'timestamp': datetime.now().isoformat()
+                    }
+                    self.send_message(msg_data)
+                    # Show the message in the UI immediately
+                    self.ui.add_message(f"{message}", "self")
+                    
+            except KeyboardInterrupt:
+                self.running = False
+                break
             except Exception as e:
-                self.logger.error(f"Error in input loop: {e}")
+                self.logger.error(f"Input loop error: {e}", exc_info=True)
+                self.ui.add_message(f"Error: {str(e)}", "error")
                 time.sleep(0.1)
+
+    def send_message(self, msg_data):
+        """Enhanced message sending with better error handling"""
+        try:
+            # Add newline to ensure proper message termination
+            encoded_message = json.dumps(msg_data) + '\n'
+            self.logger.debug(f"Sending message: {encoded_message.strip()}")
+            self.socket.sendall(encoded_message.encode())
+            
+            # Immediately show the message in UI
+            if msg_data['type'] == 'message':
+                self.ui.add_message(f"You: {msg_data['message']}", "self")
+                self.ui.refresh_chat()
+                
+            # Wait for server acknowledgment
+            return True
+                
+        except ConnectionError as e:
+            self.logger.error(f"Connection error while sending: {e}")
+            self.ui.add_message("Connection lost. Attempting to reconnect...", "error")
+            if not self.reconnect():
+                self.running = False
+            return False
+        except Exception as e:
+            self.logger.error(f"Error sending message: {e}", exc_info=True)
+            self.ui.add_message("Failed to send message", "error")
+            self.ui.refresh_chat()
+            return False
+
+    def handle_command(self, command):
+        """New method to handle commands"""
+        cmd_data = {
+            'type': 'command',
+            'message': command,
+            'sender': self.username,
+            'timestamp': datetime.now().isoformat()
+        }
+        self.socket.send((json.dumps(cmd_data) + '\n').encode())
 
     def show_help(self):
         help_text = [
@@ -463,6 +686,22 @@ class ChatClient:
             self.socket.send(json.dumps(passwd_data).encode())
         except:
             self.ui.add_message("Password change failed!", "error")
+
+    def reconnect(self):
+        """Attempt to reconnect if connection is lost"""
+        MAX_RETRIES = 3
+        retry_count = 0
+        
+        while retry_count < MAX_RETRIES:
+            try:
+                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.socket.connect((self.host, self.port))
+                self.running = True
+                return True
+            except:
+                retry_count += 1
+                time.sleep(2)
+        return False
 
 if __name__ == "__main__":
     logger = setup_logging()
