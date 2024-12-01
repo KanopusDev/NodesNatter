@@ -1,16 +1,14 @@
-import socket
-import threading
-import json
-import os
-import time
-import sqlite3
-import hashlib
 import argparse
 import getpass
-import sys
-from datetime import datetime
-import base64
+import hashlib
+import json
 import logging
+import os
+import socket
+import sqlite3
+import threading
+import time
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
 def setup_logging():
@@ -145,20 +143,15 @@ class Database:
             return False
 
     def create_initial_admin(self):
-        """Create initial admin if no users exist or if default admin doesn't exist"""
+        """Create initial admin if default admin doesn't exist"""
         try:
-            # Check if default admin exists
-            self.cursor.execute('SELECT * FROM users WHERE username=?', ('Gamecooler19',))
+            self.cursor.execute('SELECT * FROM users WHERE username=?', ('demo',))
             if not self.cursor.fetchone():
-                self.add_user('Gamecooler19', 'admin123', True)
-                print("Created default admin account:")
-                print("Username: Gamecooler19")
-                print("Password: admin123")
-                self.log_event('admin_creation', 'Default admin account created')
-                return True
+                self.add_user('demo', 'demo123', is_admin=True)
+                self.conn.commit()
+                print("Default admin 'demo' created.")
         except Exception as e:
             print(f"Error creating initial admin: {e}")
-        return False
 
     def change_password(self, username, new_password):
         try:
@@ -252,111 +245,103 @@ class CommandLineInterface:
 
 class ChatServer:
     def __init__(self, host='0.0.0.0', port=5555):
-        self.logger = logging.getLogger('NodesNatter')
+        self.logger = setup_logging()
         self.host = host
         self.port = port
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.clients = {}  # {client_socket: {'username': str, 'admin': bool, 'muted_until': timestamp}}
-        self.banned_users = set()
+        self.clients = {}  # {client_socket: {'username': str, 'admin': bool}}
         self.db = Database()
-        self.muted_users = {}  # {username: unmute_time}
-        # Create initial admin if needed
         self.db.create_initial_admin()
-        self.logger.info("Ensuring default admin account exists")
         self.message_handlers = {
             'message': self.handle_chat_message,
             'command': self.handle_command,
             'file': self.handle_file_transfer,
             'passwd': self.handle_password_change
         }
-        self.last_message_id = 0
-        self.message_cache = {}  # Store recent messages for deduplication
-        
-    def generate_message_id(self, username):
-        """Generate unique message ID"""
-        self.last_message_id += 1
-        return f"server_{int(time.time())}_{username}_{self.last_message_id}"
 
     def start(self):
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(5)
-        self.logger.info(f"Server started and listening on {self.host}:{self.port}")
-        
+        self.logger.info(f"Server started on {self.host}:{self.port}")
         while True:
             try:
                 client_socket, address = self.server_socket.accept()
-                self.logger.debug(f"New connection from {address}")
-                thread = threading.Thread(target=self.handle_client, args=(client_socket, address))
-                thread.start()
+                threading.Thread(target=self.handle_client, args=(client_socket, address), daemon=True).start()
             except Exception as e:
-                self.logger.error(f"Error accepting connection: {e}", exc_info=True)
+                self.logger.error(f"Error accepting connection: {e}")
 
     def handle_client(self, client_socket, address):
-        """Enhanced client handler with better error handling"""
         try:
             username = self.authenticate_client(client_socket)
             if not username:
+                client_socket.close()
                 return
-
+            self.clients[client_socket] = {'username': username, 'admin': self.db.is_admin(username)}
             self.send_welcome_package(client_socket)
             self.broadcast(f"{username} joined the chat", "system")
-            
-            buffer = ""
             while True:
-                try:
-                    data = client_socket.recv(4096).decode()  # Increased buffer size
-                    if not data:
-                        break
-                        
-                    buffer += data
-                    while '\n' in buffer:
-                        message, buffer = buffer.split('\n', 1)
-                        if message.strip():
-                            msg_data = json.loads(message)
-                            self.process_message(client_socket, msg_data)
-                except json.JSONDecodeError as e:
-                    self.logger.error(f"Invalid JSON from {username}: {e}")
-                    buffer = ""
-                except Exception as e:
-                    self.logger.error(f"Error processing message from {username}: {e}")
-                    buffer = ""
-                    
+                msg_data = self.receive_message(client_socket)
+                if msg_data:
+                    self.process_message(client_socket, msg_data)
+                else:
+                    break
         except Exception as e:
-            self.logger.error(f"Client handler error: {e}", exc_info=True)
+            self.logger.error(f"Error handling client {address}: {e}")
         finally:
             self.remove_client(client_socket)
+
+    def authenticate_client(self, client_socket):
+        try:
+            data = client_socket.recv(1024).decode()
+            auth_info = json.loads(data)
+            username = auth_info.get('username')
+            password = auth_info.get('password')
+            if self.db.verify_user(username, password):
+                client_socket.send("AUTH_SUCCESS".encode())
+                self.logger.info(f"User {username} authenticated")
+                return username
+            else:
+                client_socket.send("AUTH_FAILED".encode())
+                self.logger.warning(f"Authentication failed for {username}")
+                return None
+        except Exception as e:
+            self.logger.error(f"Authentication error: {e}")
+            return None
 
     def send_welcome_package(self, client_socket):
         """Send initial data to newly connected client"""
         try:
-            # First send message history
-            history = self.db.get_message_history(50)
-            history_data = {
+            # Get message history from the database
+            history = self.db.get_message_history(limit=50)
+            messages = []
+            for sender, content, timestamp in history:
+                message = {
+                    'type': 'message',
+                    'message': content,
+                    'sender': sender,
+                    'timestamp': timestamp,
+                    'msg_type': 'history'
+                }
+                messages.append(message)
+            welcome_package = {
                 'type': 'history',
-                'messages': [
-                    {
-                        'sender': msg[0],
-                        'message': msg[1],
-                        'timestamp': str(msg[2])
-                    } for msg in history
-                ]
+                'messages': messages
             }
-            self._send_message(client_socket, history_data)
-
-            # Then send user list as separate message
-            self.broadcast_user_list()
-            
+            self._send_message(client_socket, welcome_package)
         except Exception as e:
-            self.logger.error(f"Error sending welcome package: {e}")
+            self.logger.error(f"Error sending welcome package: {e}", exc_info=True)
+            self.send_error(client_socket, "Failed to send welcome package.")
 
     def _send_message(self, client_socket, msg_data):
         """Helper method to properly send JSON messages"""
         try:
             encoded_message = json.dumps(msg_data) + '\n'
             client_socket.sendall(encoded_message.encode())
-        except Exception as e:
-            self.logger.error(f"Error sending message: {e}")
+        except (BrokenPipeError, ConnectionResetError) as e:
+            self.logger.error(f"Error sending message to client: {e}")
             self.remove_client(client_socket)
+        except Exception as e:
+            self.logger.error(f"Error sending message to client: {e}")
 
     def process_message(self, client_socket, msg_data):
         """Enhanced message processing with validation and logging"""
@@ -404,64 +389,40 @@ class ChatServer:
     def handle_chat_message(self, client_socket, msg_data):
         """Handle regular chat messages"""
         try:
-            username = self.clients[client_socket]['username']
-            
+            sender = self.clients[client_socket]['username']
+            message = msg_data.get('message', '')
+            if not message.strip():
+                return  # Ignore empty messages
+
             if self.is_muted(client_socket):
-                self.send_error(client_socket, "You are currently muted")
+                self.send_error(client_socket, "You are muted and cannot send messages.")
                 return
-                
-            message = msg_data.get('message', '').strip()
-            if not message:
-                return
-                
-            # Prepare broadcast message
-            broadcast_data = {
+
+            # Log the message
+            self.db.log_message(sender, message)
+
+            # Broadcast the message to other clients
+            msg_data = {
                 'type': 'message',
-                'id': msg_data['id'],
-                'message': f"{username}: {message}",
-                'sender': username,
+                'sender': sender,
+                'message': message,
                 'timestamp': datetime.now().isoformat(),
                 'msg_type': 'normal'
             }
-            
-            # Store in database
-            self.db.log_message(username, message)
-            
-            # Send acknowledgment to sender
-            ack_data = {
-                'type': 'ack',
-                'id': msg_data['id'],
-                'status': 'delivered',
-                'timestamp': datetime.now().isoformat()
-            }
-            self._send_message(client_socket, ack_data)
-            
-            # Broadcast to all clients
-            self.broadcast_message(broadcast_data)
-            
+            self.broadcast_message(msg_data, exclude=client_socket)
         except Exception as e:
-            self.logger.error(f"Error handling chat message: {e}", exc_info=True)
-            self.send_error(client_socket, "Failed to process message")
+            self.logger.error(f"Chat message handling error: {e}")
+            self.send_error(client_socket, "Failed to process your message.")
 
     def broadcast_message(self, msg_data, exclude=None):
-        """Enhanced broadcast with proper message formatting"""
+        """Send a specific message to all clients"""
         try:
-            encoded_message = json.dumps(msg_data) + '\n'
-            failed_clients = []
-            
             for client in self.clients:
-                if client != exclude:
-                    try:
-                        client.sendall(encoded_message.encode())
-                    except:
-                        failed_clients.append(client)
-            
-            # Remove failed clients after iteration
-            for client in failed_clients:
-                self.remove_client(client)
-                
+                if exclude and client == exclude:
+                    continue
+                self._send_message(client, msg_data)
         except Exception as e:
-            self.logger.error(f"Broadcast error: {e}", exc_info=True)
+            self.logger.error(f"Broadcast message error: {e}")
 
     def _clean_message_cache(self):
         """Clean old messages from cache"""
@@ -482,8 +443,11 @@ class ChatServer:
                 'id': self.generate_message_id('system')
             }
             client_socket.sendall((json.dumps(error_data) + '\n').encode())
-        except:
+        except (BrokenPipeError, ConnectionResetError) as e:
+            self.logger.error(f"Error sending error message to client: {e}")
             self.remove_client(client_socket)
+        except Exception as e:
+            self.logger.error(f"Error sending error message to client: {e}")
 
     def handle_special_message(self, client_socket, message):
         msg_type = message.get('type')
@@ -552,7 +516,7 @@ class ChatServer:
         elif parts[0] == '/deluser' and is_admin:
             if len(parts) == 2:
                 target = parts[1]
-                if target != 'gamecooler19':  # Prevent deletion of default admin
+                if target != 'demo':  # Prevent deletion of default admin
                     if self.db.delete_user(target):
                         self.broadcast(f"User {target} has been deleted", "system")
                     else:
@@ -623,31 +587,20 @@ class ChatServer:
     def broadcast(self, message, msg_type="normal", exclude=None):
         """Send message to all connected clients"""
         try:
-            message_data = {
+            msg_data = {
                 'type': 'message',
+                'sender': 'SYSTEM',
                 'message': message,
-                'msg_type': msg_type,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'msg_type': msg_type
             }
-            
-            encoded_message = json.dumps(message_data) + '\n'
-            
             for client in self.clients:
-                if client != exclude:
-                    try:
-                        client.send(encoded_message.encode())
-                    except:
-                        self.remove_client(client)
-                        
-            # Log the message to database
-            if exclude and exclude in self.clients:
-                sender = self.clients[exclude]['username']
-            else:
-                sender = 'SYSTEM'
-            self.db.log_message(sender, message)
-                
+                if exclude and client == exclude:
+                    continue
+                if hasattr(client, 'send') and callable(client.send):  # Ensure client has send method
+                    self._send_message(client, msg_data)
         except Exception as e:
-            self.logger.error(f"Error broadcasting message: {e}")
+            self.logger.error(f"Broadcast error: {e}")
 
     def broadcast_user_list(self):
         users = [self.clients[client]['username'] for client in self.clients]
@@ -753,6 +706,16 @@ class ChatServer:
         except Exception as e:
             self.logger.error(f"Password change error: {e}", exc_info=True)
             self.send_error(client_socket, "Password change failed")
+
+    def cleanup_inactive_clients(self):
+        current_time = time.time()
+        inactive_timeout = 300  # 5 minutes
+        to_remove = []
+        for client in self.clients:
+            if current_time - self.clients[client].get('last_active', 0) > inactive_timeout:
+                to_remove.append(client)
+        for client in to_remove:
+            self.remove_client(client)
 
 def main():
     logger = setup_logging()
