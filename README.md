@@ -22,7 +22,7 @@ NodesNatter is a chat application that allows users to communicate in real-time.
 ### Clone the Repository
 
 ```sh
-git clone https://github.com/Canopus-Development/NodesNatter.git
+git clone https://github.com/Kanopusdev/NodesNatter.git
 cd NodesNatter
 ```
 
@@ -82,7 +82,7 @@ Contributions are welcome! Please fork the repository and submit a pull request.
 
 ## License
 
-This project is licensed under the Canopus Development License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the Kanopus Development License. See the [LICENSE](LICENSE) file for details.
 
 ## Contact
 

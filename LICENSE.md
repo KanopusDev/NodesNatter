@@ -1,7 +1,7 @@
 
-# Canopus Development License
+# Kanopus Development License
 
-This License Agreement ("Agreement") is made between Canopus Development ("Licensor") and the Licensee ("You" or "Your"). By using the software ("Software"), You agree to be bound by the terms and conditions of this Agreement.
+This License Agreement ("Agreement") is made between Kanopus Development ("Licensor") and the Licensee ("You" or "Your"). By using the software ("Software"), You agree to be bound by the terms and conditions of this Agreement.
 
 ## 1. Grant of License
 
@@ -41,8 +41,8 @@ This Agreement constitutes the entire agreement between You and Licensor with re
 
 ## 9. Contact Information
 
-For any questions or concerns about this Agreement, please contact Canopus Development at [Discord](https://discord.gg/JUhv27kzcJ).
+For any questions or concerns about this Agreement, please contact Kanopus Development at [Discord](https://discord.gg/JUhv27kzcJ).
 
 ---
 
-© 2023 Canopus Development. All rights reserved.
+© 2023 Kanopus Development. All rights reserved.
